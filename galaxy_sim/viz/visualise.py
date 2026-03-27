@@ -39,6 +39,9 @@ def plot_frame(
     out: str | Path | None = None,
     max_points: int = 200_000,
     cmap: str = "inferno",
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+    point_size: float = 0.1,
 ) -> None:
     import matplotlib.pyplot as plt
 
@@ -54,9 +57,13 @@ def plot_frame(
     sc = ax.scatter(
         pos[:, 0], pos[:, 1],
         c=speed, cmap=cmap,
-        s=0.1, linewidths=0, alpha=0.6,
+        s=point_size, linewidths=0, alpha=0.6,
     )
     ax.set_aspect("equal")
+    if xlim is not None:
+        ax.set_xlim(xlim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
     ax.set_title(f"t = {snap.time:.3f}", color="white")
     ax.tick_params(colors="white")
     for spine in ax.spines.values():
@@ -96,7 +103,7 @@ def _replay_vispy(cache: SnapshotCache, max_points: int, point_size: float) -> N
             pos = pos[idx]
             vel = vel[idx]
         speed = np.linalg.norm(vel, axis=1)
-        speed = (speed - speed.min()) / (speed.ptp() + 1e-9)
+        speed = (speed - speed.min()) / (np.ptp(speed) + 1e-9)
         clr = color.get_colormap("inferno").map(speed)
         return pos, clr
 
@@ -156,6 +163,7 @@ def replay(
     max_points: int = 500_000,
     point_size: float = 1.5,
     frame_dir: str | Path | None = None,
+    axis_percentile: float = 98.0,
 ) -> None:
     """Replay all snapshots interactively or export as PNG frames.
 
@@ -173,9 +181,28 @@ def replay(
     if frame_dir:
         frame_dir = Path(frame_dir)
         frame_dir.mkdir(parents=True, exist_ok=True)
+        # Compute global min/max for all frames for alignment, filtering outliers
+        all_x = []
+        all_y = []
+        for snap in cache:
+            pos = snap.pos
+            if len(pos) > max_points:
+                idx = np.random.choice(len(pos), max_points, replace=False)
+                pos = pos[idx]
+            all_x.append(pos[:, 0])
+            all_y.append(pos[:, 1])
+        all_x = np.concatenate(all_x)
+        all_y = np.concatenate(all_y)
+
+        # Use central percentile for axis limits
+        lower = (100 - axis_percentile) / 2
+        upper = 100 - lower
+        xlim = (np.percentile(all_x, lower), np.percentile(all_x, upper))
+        ylim = (np.percentile(all_y, lower), np.percentile(all_y, upper))
+
         for i, snap in enumerate(cache):
             out = frame_dir / f"frame_{i:04d}.png"
-            plot_frame(snap, out=out, max_points=max_points)
+            plot_frame(snap, out=out, max_points=max_points, xlim=xlim, ylim=ylim, point_size=point_size)
             print(f"  wrote {out}")
         return
 
@@ -188,7 +215,7 @@ def replay(
 
     if backend == "matplotlib":
         for snap in cache:
-            plot_frame(snap, max_points=max_points)
+            plot_frame(snap, max_points=max_points, point_size=point_size)
 
 
 # ---------------------------------------------------------------------------
@@ -201,15 +228,19 @@ def _main() -> None:
     parser.add_argument("--backend", choices=["vispy", "matplotlib"], default="vispy")
     parser.add_argument("--max-points", type=int, default=500_000)
     parser.add_argument("--point-size", type=float, default=1.5)
-    parser.add_argument("--frames", default="frames/", help="Export frames to this directory")
+    parser.add_argument("--frames", default="frames/", help="Export frames to this directory (matplotlib only)")
+    parser.add_argument("--axis-percentile", type=float, default=98.0, help="Central percentile for axis limits (default: 98.0)")
     args = parser.parse_args()
 
+    # Only use frames if backend is matplotlib
+    frame_dir = args.frames if args.backend == "matplotlib" else None
     replay(
         output_dir=args.snapdir,
         backend=args.backend,
         max_points=args.max_points,
         point_size=args.point_size,
-        frame_dir=args.frames,
+        frame_dir=frame_dir,
+        axis_percentile=args.axis_percentile,
     )
 
 
