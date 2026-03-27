@@ -1,0 +1,5 @@
+numpy>=1.24
+h5py>=3.8
+matplotlib>=3.7
+vispy>=0.14       # GPU-accelerated rendering; optional but strongly recommended
+PyOpenGL>=3.1     # vispy backend
