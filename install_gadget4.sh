@@ -53,15 +53,17 @@ echo "  FFTW_LIBS : $FFTW_LIBS"
 echo "  HDF5_INCL : $HDF5_INCL"
 echo "  HDF5_LIBS : $HDF5_LIBS"
 
-# ── 3. Clone if not present ────────────────────────────────────────────────
-if [[ ! -d "$GADGET_DIR" ]]; then
-    echo "=== Cloning GADGET-4 ==="
-    git clone --depth=1 https://gitlab.mpcdf.mpg.de/vrs/gadget4.git "$GADGET_DIR"
-fi
+# ── 3. Initialise submodule if not already populated ──────────────────────
+echo "=== Initialising GADGET-4 submodule ==="
+cd "$SCRIPT_DIR"
+git submodule update --init --recursive gadget4
 
 # ── 4. Write a custom path Makefile for this machine ──────────────────────
+# Generated files are written to configs/ (OUTSIDE the submodule) and
+# symlinked in, so the gadget4 submodule stays clean and stageable.
 echo "=== Writing build configuration ==="
-cat > "$GADGET_DIR/buildsystem/Makefile.path.ubuntu" <<EOF
+MKPATH="$SCRIPT_DIR/configs/Makefile.path.ubuntu"
+cat > "$MKPATH" <<EOF
 GSL_INCL   = $GSL_INCL
 GSL_LIBS   = $GSL_LIBS
 FFTW_INCL  = $FFTW_INCL
@@ -72,14 +74,28 @@ HWLOC_INCL =
 HWLOC_LIBS =
 EOF
 
+ln -sf "$MKPATH" "$GADGET_DIR/buildsystem/Makefile.path.ubuntu"
+
 # Add ubuntu SYSTYPE to Makefile (idempotent)
 if ! grep -q '"ubuntu"' "$GADGET_DIR/Makefile"; then
     sed -i '/ifeq ($(SYSTYPE),"Generic-gcc")/i ifeq ($(SYSTYPE),"ubuntu")\ninclude buildsystem\/Makefile.path.ubuntu\ninclude buildsystem\/Makefile.comp.gcc\nendif\n' \
         "$GADGET_DIR/Makefile"
 fi
 
-# Write Makefile.systype
-echo 'SYSTYPE="ubuntu"' > "$GADGET_DIR/Makefile.systype"
+# Write Makefile.systype outside the submodule and symlink in
+echo 'SYSTYPE="ubuntu"' > "$SCRIPT_DIR/configs/Makefile.systype"
+ln -sf "$SCRIPT_DIR/configs/Makefile.systype" "$GADGET_DIR/Makefile.systype"
+
+# Exclude generated/modified files from the submodule's git index so the
+# parent repo can stage the submodule cleanly.
+# When gadget4 is a submodule its .git is a file pointing to
+# $REPO/.git/modules/gadget4, so we resolve the real path here.
+_git_common_dir="$(git -C "$GADGET_DIR" rev-parse --git-common-dir)"
+exclude="$_git_common_dir/info/exclude"
+for f in Makefile Makefile.systype buildsystem/Makefile.path.ubuntu Config.sh; do
+    grep -qxF "$f" "$exclude" 2>/dev/null || echo "$f" >> "$exclude"
+done
+git -C "$GADGET_DIR" update-index --assume-unchanged Makefile
 
 # ── 5. Write Config.sh ─────────────────────────────────────────────────────
 # HDF5 and OpenMP are always enabled in GADGET-4 -- they are NOT Config.sh options.

@@ -3,3 +3,4 @@ __pycache__/
 frames/
 output/
 *.egg-info/
+configs/Makefile*

@@ -1,0 +1,3 @@
+[submodule "gadget4"]
+	path = gadget4
+	url = https://gitlab.mpcdf.mpg.de/vrs/gadget4
