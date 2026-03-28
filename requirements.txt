@@ -2,4 +2,5 @@ numpy>=1.24
 h5py>=3.8
 matplotlib>=3.7
 vispy>=0.14       # GPU-accelerated rendering; optional but strongly recommended
-PyOpenGL>=3.1     # vispy backend
+PyOpenGL>=3.1     # vispy OpenGL backend
+glfw>=2.5         # windowed vispy backend; works on WSL2 (WSLg) and headless

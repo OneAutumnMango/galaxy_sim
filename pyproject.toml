@@ -13,7 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-viz = ["vispy>=0.14", "PyOpenGL>=3.1"]
+viz = ["vispy>=0.14", "PyOpenGL>=3.1", "glfw>=2.5"]
+# Note: MP4 export requires the system package 'ffmpeg' (not pip-installable).
+# Install with: sudo apt-get install ffmpeg
 
 [project.scripts]
 galaxy-run = "galaxy_sim.run:main"
