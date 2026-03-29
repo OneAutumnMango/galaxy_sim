@@ -130,33 +130,43 @@ def render_mp4(
 def plot_frame(
     snap: Snapshot,
     out: str | Path | None = None,
-    max_points: int = 200_000,
+    max_points: int = 200_000,  # kept for API compatibility, no longer used
     cmap: str = "inferno",
     xlim: tuple[float, float] | None = None,
     ylim: tuple[float, float] | None = None,
-    point_size: float = 0.1,
+    point_size: float = 0.1,   # kept for API compatibility, no longer used
+    resolution: int = 1024,
 ) -> None:
+    """Render a snapshot as a 2D density map via histogram2d + imshow.
+
+    Much faster than scatter for large N: bins all particles into a grid in
+    pure numpy, then renders a single image.  Works with millions of particles
+    without any subsampling.
+    """
     import matplotlib.pyplot as plt
 
-    pos = snap.pos
-    if len(pos) > max_points:
-        idx = np.random.choice(len(pos), max_points, replace=False)
-        pos = pos[idx]
+    pos = snap.pos          # use ALL particles
+    x, y = pos[:, 0], pos[:, 1]
 
-    speed = np.linalg.norm(snap.vel[idx] if len(snap.pos) > max_points else snap.vel, axis=1)
+    if xlim is None:
+        xlim = (float(np.percentile(x, 1.0)), float(np.percentile(x, 99.0)))
+    if ylim is None:
+        ylim = (float(np.percentile(y, 1.0)), float(np.percentile(y, 99.0)))
+
+    # 2D density grid — O(N) numpy, single imshow draw call
+    H, _, _ = np.histogram2d(x, y, bins=resolution, range=[xlim, ylim])
+    img = np.log1p(H.T)     # log scale reveals both dense core and outer halo
 
     fig, ax = plt.subplots(figsize=(8, 8), facecolor="black")
     ax.set_facecolor("black")
-    sc = ax.scatter(
-        pos[:, 0], pos[:, 1],
-        c=speed, cmap=cmap,
-        s=point_size, linewidths=0, alpha=0.6,
+    ax.imshow(
+        img,
+        origin="lower",
+        extent=[xlim[0], xlim[1], ylim[0], ylim[1]],
+        cmap=cmap,
+        interpolation="nearest",
+        aspect="equal",
     )
-    ax.set_aspect("equal")
-    if xlim is not None:
-        ax.set_xlim(xlim)
-    if ylim is not None:
-        ax.set_ylim(ylim)
     ax.set_title(f"t = {snap.time:.3f}", color="white")
     ax.tick_params(colors="white")
     for spine in ax.spines.values():
@@ -283,24 +293,22 @@ def replay(
     if frame_dir:
         frame_dir = Path(frame_dir)
         frame_dir.mkdir(parents=True, exist_ok=True)
-        # Compute global min/max for all frames for alignment, filtering outliers
-        all_x = []
-        all_y = []
+        # Compute global axis limits by sampling every snapshot lightly
+        # (only need enough points to get stable percentiles)
+        LIMIT_SAMPLE = 10_000
+        all_x, all_y = [], []
         for snap in cache:
             pos = snap.pos
-            if len(pos) > max_points:
-                idx = np.random.choice(len(pos), max_points, replace=False)
-                pos = pos[idx]
-            all_x.append(pos[:, 0])
-            all_y.append(pos[:, 1])
+            step = max(1, len(pos) // LIMIT_SAMPLE)
+            all_x.append(pos[::step, 0])
+            all_y.append(pos[::step, 1])
         all_x = np.concatenate(all_x)
         all_y = np.concatenate(all_y)
 
-        # Use central percentile for axis limits
         lower = (100 - axis_percentile) / 2
         upper = 100 - lower
-        xlim = (np.percentile(all_x, lower), np.percentile(all_x, upper))
-        ylim = (np.percentile(all_y, lower), np.percentile(all_y, upper))
+        xlim = (float(np.percentile(all_x, lower)), float(np.percentile(all_x, upper)))
+        ylim = (float(np.percentile(all_y, lower)), float(np.percentile(all_y, upper)))
 
         for i, snap in enumerate(cache):
             out = frame_dir / f"frame_{i:04d}.png"
