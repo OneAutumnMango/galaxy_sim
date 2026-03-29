@@ -10,3 +10,4 @@ galaxy.mp4
 ic/*.hdf5
 *.hdf5
 *.tipsy
+gpuLog*
