@@ -19,16 +19,22 @@ class SimParams:
     snap_interval: float = 0.05     # time between snapshots
     softening: float = 0.1          # gravitational softening (kpc)
 
-    # GADGET-4 binary & paths
+    # Backend selection
+    backend: str = "bonsai"         # "bonsai" or "gadget4"
+
+    # Binary paths
     gadget4_bin: Path = Path("gadget4/Gadget4")
+    bonsai_bin: Path  = Path("bonsai/runtime/build/bonsai2_slowdust")
+
+    # Paths
     output_dir: Path = Path("output")
     ic_file: Path = Path("ic/galaxy.hdf5")
     param_template: Path = Path("configs/galaxy.param")
-    n_mpi: int = 1                  # MPI ranks (set >1 for cluster runs)
-    n_omp: int = 0                  # OpenMP threads (0 = auto)
+    n_omp: int = 0                  # OpenMP threads (0 = auto-detect all cores)
 
     def __post_init__(self):
         self.gadget4_bin = Path(self.gadget4_bin)
-        self.output_dir = Path(self.output_dir)
-        self.ic_file = Path(self.ic_file)
+        self.bonsai_bin  = Path(self.bonsai_bin)
+        self.output_dir  = Path(self.output_dir)
+        self.ic_file     = Path(self.ic_file)
         self.param_template = Path(self.param_template)

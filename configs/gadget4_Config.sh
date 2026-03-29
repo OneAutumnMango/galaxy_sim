@@ -14,6 +14,10 @@ GADGET_LONG_LONG_PARTICLEID=1   # particle IDs as 64-bit
 
 #-- Parallelism
 OPENMP=1
+IMPOSE_PINNING=1            # pin OMP threads to CPU cores (reduces cache misses)
+
+#-- Performance
+USE_SINGLEPRECISION_INTERNALLY=1  # ~2x faster, halves memory use
 
 #-- Initial conditions in HDF5
 HAVE_HDF5=1

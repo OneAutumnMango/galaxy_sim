@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from multiprocessing import cpu_count
 from pathlib import Path
 
 from galaxy_sim.sim.params import SimParams
@@ -38,10 +39,14 @@ def _write_param_file(params: SimParams, dest: Path) -> None:
 
 
 def run_simulation(params: SimParams) -> Path:
-    """Generate ICs, write a param file, and launch GADGET-4.
+    """Generate ICs and launch the configured simulation backend.
 
     Returns the output directory path.
     """
+    if params.backend == "bonsai":
+        from galaxy_sim.sim.bonsai_runner import run_bonsai
+        return run_bonsai(params)
+
     from galaxy_sim.ic.ic_gen import generate_galaxy_ic
     from galaxy_sim.ic.ic_writer import write_hdf5_ic
 
@@ -63,15 +68,11 @@ def run_simulation(params: SimParams) -> Path:
     _write_param_file(params, param_file)
     print(f"Param file written to {param_file}")
 
-    cmd = []
-    if params.n_mpi > 1:
-        cmd += ["mpirun", "-np", str(params.n_mpi)]
-    if params.n_omp > 0:
-        env = os.environ.copy()
-        env["OMP_NUM_THREADS"] = str(params.n_omp)
-    else:
-        env = None
-    cmd += [str(params.gadget4_bin.resolve()), str(param_file.resolve())]
+    env = os.environ.copy()
+    omp_threads = params.n_omp if params.n_omp > 0 else cpu_count()
+    env["OMP_NUM_THREADS"] = str(omp_threads)
+    print(f"OMP_NUM_THREADS={omp_threads}")
+    cmd = [str(params.gadget4_bin.resolve()), str(param_file.resolve())]
 
     print(f"Running: {' '.join(cmd)}")
     subprocess.run(cmd, env=env, check=True)

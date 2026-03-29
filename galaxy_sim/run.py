@@ -20,8 +20,10 @@ def main() -> None:
     p.add_argument("--softening", type=float, default=0.1, help="Gravitational softening (kpc)")
     p.add_argument("--output", default="output/", help="Output directory")
     p.add_argument("--gadget4-bin", default="gadget4/Gadget4")
-    p.add_argument("--mpi", type=int, default=1, help="MPI ranks")
-    p.add_argument("--omp", type=int, default=0, help="OpenMP threads (0=auto)")
+    p.add_argument("--bonsai-bin", default="bonsai/runtime/build/bonsai2_slowdust")
+    p.add_argument("--backend", choices=["bonsai", "gadget4"], default="bonsai",
+                   help="Simulation backend (default: bonsai for GPU)")
+    p.add_argument("--omp", type=int, default=0, help="OpenMP threads (0=auto-detect all cores)")
     args = p.parse_args()
 
     params = SimParams(
@@ -32,7 +34,8 @@ def main() -> None:
         softening=args.softening,
         output_dir=Path(args.output),
         gadget4_bin=Path(args.gadget4_bin),
-        n_mpi=args.mpi,
+        bonsai_bin=Path(args.bonsai_bin),
+        backend=args.backend,
         n_omp=args.omp,
     )
 
