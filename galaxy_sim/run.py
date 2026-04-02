@@ -13,7 +13,8 @@ from galaxy_sim.sim.runner import run_simulation
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Run a galaxy N-body simulation via GADGET-4")
-    p.add_argument("--n", type=int, default=1_000_000, help="Number of particles")
+    p.add_argument("--n", type=int, default=1_000_000,
+                   help="Total number of particles across both galaxies (split equally between the two)")
     p.add_argument("--mass", type=float, default=1.0, help="Galaxy mass (1e10 Msun)")
     p.add_argument("--time", type=float, default=5.0, help="End time (code units ≈ Gyr)")
     p.add_argument("--snap-interval", type=float, default=0.05)
@@ -27,7 +28,7 @@ def main() -> None:
     args = p.parse_args()
 
     params = SimParams(
-        n_particles=args.n,
+        n_particles=args.n // 2,  # --n is total; each galaxy gets half
         galaxy_mass=args.mass,
         time_end=args.time,
         snap_interval=args.snap_interval,

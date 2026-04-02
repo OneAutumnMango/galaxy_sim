@@ -23,6 +23,8 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Literal
 
@@ -64,7 +66,60 @@ def _configure_vispy_backend() -> None:
     except Exception:
         pass  # fall back to whatever vispy auto-detects
 
-from galaxy_sim.cache.reader import Snapshot, SnapshotCache
+from galaxy_sim.cache.reader import Snapshot, SnapshotCache, _load_hdf5_snap
+from galaxy_sim.viz.convert_snapshots import convert_directory
+
+
+# ---------------------------------------------------------------------------
+# Lean bounds sampler — reads ONLY coordinates, strided, no velocities
+# ---------------------------------------------------------------------------
+
+def _sample_coords(path: Path, max_samples: int = 10_000) -> tuple[np.ndarray, np.ndarray]:
+    """Return (x, y) arrays of at most *max_samples* points from *path*.
+
+    Opens the HDF5 file once, reads only the Coordinates dataset with a
+    stride so that only a small fraction of data is pulled off disk and
+    no velocity data is loaded at all.
+    """
+    xs, ys = [], []
+    with __import__('h5py').File(path, 'r') as f:
+        for ptype in range(6):
+            key = f"PartType{ptype}"
+            if key not in f:
+                continue
+            grp = f[key]
+            if 'Coordinates' not in grp:
+                continue
+            ds = grp['Coordinates']
+            n = ds.shape[0]
+            step = max(1, n // max_samples)
+            # h5py supports basic slicing — only the strided rows cross the bus
+            coords = ds[::step, :2]   # shape (n//step, 2), dtype float32/64
+            xs.append(coords[:, 0])
+            ys.append(coords[:, 1])
+    if not xs:
+        return np.empty(0, np.float32), np.empty(0, np.float32)
+    return np.concatenate(xs), np.concatenate(ys)
+
+
+# ---------------------------------------------------------------------------
+# Parallel frame-render worker  (module-level so it is picklable)
+# ---------------------------------------------------------------------------
+
+def _render_frame_task(
+    snap_path: Path,
+    out_path: Path,
+    xlim: tuple[float, float],
+    ylim: tuple[float, float],
+    max_points: int,
+    point_size: float,
+    resolution: int,
+) -> Path:
+    """Load one snapshot file, render it, write PNG.  Runs in a worker process."""
+    snap = _load_hdf5_snap(snap_path)
+    plot_frame(snap, out=out_path, max_points=max_points, xlim=xlim, ylim=ylim,
+               point_size=point_size, resolution=resolution)
+    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -103,21 +158,29 @@ def render_mp4(
 
     cmd = [
         "ffmpeg", "-y",
+        "-loglevel", "error",          # suppress per-frame progress spam
         "-framerate", str(fps),
         "-i", str(frame_dir / pattern),
         "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",   # libx264 requires even dimensions
         "-c:v", "libx264",
-        "-preset", "slow",
+        "-preset", "medium",           # 'slow' is very CPU-heavy; medium is a good balance
         "-crf", "18",
         "-pix_fmt", "yuv420p",
         str(output),
     ]
 
-    print(f"Encoding {len(frames)} frames → {output}  ({fps} fps)")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
+    print(f"Encoding {len(frames)} frames → {output}  ({fps} fps)", flush=True)
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as proc:
+        _, stderr_data = proc.communicate()
+
+    if proc.returncode != 0:
         raise RuntimeError(
-            f"ffmpeg failed (exit {result.returncode}):\n{result.stderr}"
+            f"ffmpeg failed (exit {proc.returncode}):\n{stderr_data}"
         )
     print(f"MP4 written: {output}")
     return output
@@ -273,6 +336,7 @@ def replay(
     axis_percentile: float = 98.0,
     mp4_out: str | Path | None = None,
     fps: float = 24.0,
+    n_workers: int = 0,
 ) -> None:
     """Replay all snapshots interactively or export as PNG frames / MP4.
 
@@ -286,22 +350,37 @@ def replay(
     axis_percentile:  central percentile used for axis limits (default 98)
     mp4_out:          if set, encode exported frames into an MP4 at this path
     fps:              frames per second for the MP4 (default 24)
+    n_workers:        worker processes for parallel frame export (0 = auto:
+                      min(4, cpu_count−1)).  Keep low to limit RAM usage.
     """
+    output_dir = Path(output_dir)
+
+    # Auto-convert any raw Bonsai snapshots that haven't been converted yet.
+    raw_snaps = [
+        s for s in output_dir.iterdir()
+        if s.suffix != ".hdf5" and not s.name.endswith(".tmp")
+        and "snapshot" in s.name
+    ] if output_dir.exists() else []
+    if raw_snaps:
+        print(f"Found {len(raw_snaps)} unconverted raw snapshot(s) — converting before visualising…")
+        convert_directory(output_dir)
+
     cache = SnapshotCache(output_dir)
     print(f"Found {len(cache)} snapshots in {output_dir}")
 
     if frame_dir:
         frame_dir = Path(frame_dir)
         frame_dir.mkdir(parents=True, exist_ok=True)
-        # Compute global axis limits by sampling every snapshot lightly
-        # (only need enough points to get stable percentiles)
-        LIMIT_SAMPLE = 10_000
+        # Compute global axis limits by sampling every snapshot lightly.
+        # _sample_coords reads ONLY strided Coordinates from HDF5 — no
+        # velocities, no full arrays — so the main process stays lean even
+        # with 1000 snapshots × 1 M particles.
+        LIMIT_SAMPLE = 5_000   # per snapshot; plenty for stable percentiles
         all_x, all_y = [], []
-        for snap in cache:
-            pos = snap.pos
-            step = max(1, len(pos) // LIMIT_SAMPLE)
-            all_x.append(pos[::step, 0])
-            all_y.append(pos[::step, 1])
+        for snap_path in cache.paths:
+            x, y = _sample_coords(snap_path, LIMIT_SAMPLE)
+            all_x.append(x)
+            all_y.append(y)
         all_x = np.concatenate(all_x)
         all_y = np.concatenate(all_y)
 
@@ -310,10 +389,29 @@ def replay(
         xlim = (float(np.percentile(all_x, lower)), float(np.percentile(all_x, upper)))
         ylim = (float(np.percentile(all_y, lower)), float(np.percentile(all_y, upper)))
 
-        for i, snap in enumerate(cache):
-            out = frame_dir / f"frame_{i:04d}.png"
-            plot_frame(snap, out=out, max_points=max_points, xlim=xlim, ylim=ylim, point_size=point_size)
-            print(f"  wrote {out}")
+        # Parallel render — each worker loads, renders and writes one frame
+        # independently so only n_workers snapshots are in RAM at once.
+        workers = n_workers if n_workers > 0 else max(1, min(4, cpu_count() - 1))
+        paths = cache.paths
+        out_paths = [frame_dir / f"frame_{i:04d}.png" for i in range(len(paths))]
+        futures_map = {}
+        completed = 0
+        print(f"Rendering {len(paths)} frames with {workers} worker(s)…")
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            for i, (snap_path, out) in enumerate(zip(paths, out_paths)):
+                fut = pool.submit(
+                    _render_frame_task,
+                    snap_path, out, xlim, ylim, max_points, point_size, 1024,
+                )
+                futures_map[fut] = out
+            for fut in as_completed(futures_map):
+                out = futures_map[fut]
+                exc = fut.exception()
+                if exc:
+                    print(f"  ERROR rendering {out}: {exc}")
+                else:
+                    completed += 1
+                    print(f"  wrote {out}  ({completed}/{len(paths)})")
         if mp4_out:
             render_mp4(frame_dir, output=mp4_out, fps=fps)
         return
@@ -346,6 +444,8 @@ def _main() -> None:
                         help="After exporting frames, encode them into an MP4 at this path (requires ffmpeg)")
     parser.add_argument("--fps", type=float, default=24.0,
                         help="Frames per second for the MP4 output (default: 24)")
+    parser.add_argument("--workers", type=int, default=0, metavar="N",
+                        help="Worker processes for parallel PNG export (0 = auto: min(4, cpu-1))")
     args = parser.parse_args()
 
     # Only use frames if backend is matplotlib (or mp4 output is requested)
@@ -359,6 +459,7 @@ def _main() -> None:
         axis_percentile=args.axis_percentile,
         mp4_out=args.mp4,
         fps=args.fps,
+        n_workers=args.workers,
     )
 
 

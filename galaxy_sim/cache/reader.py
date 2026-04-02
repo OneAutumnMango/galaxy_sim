@@ -79,6 +79,11 @@ class SnapshotCache:
     def __len__(self) -> int:
         return len(self._files)
 
+    @property
+    def paths(self) -> list[Path]:
+        """Ordered list of snapshot file paths (does not load data)."""
+        return list(self._files)
+
     def __getitem__(self, idx: int) -> Snapshot:
         return _load_hdf5_snap(self._files[idx])
 

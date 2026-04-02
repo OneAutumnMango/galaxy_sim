@@ -8,7 +8,7 @@ class SimParams:
     n_particles: int = 1_000_000
 
     # Galaxy geometry — Hernquist profile (bulge) + exponential disk
-    galaxy_mass: float = 1.0        # 1e10 Msun
+    galaxy_mass: float = 5.0        # 1e10 Msun  (~half the MW stellar mass)
     bulge_fraction: float = 0.1     # fraction of mass in bulge
     disk_scale_length: float = 3.0  # kpc
     disk_scale_height: float = 0.3  # kpc

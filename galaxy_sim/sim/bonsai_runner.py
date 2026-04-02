@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import resource
 import subprocess
+import time
 from multiprocessing import cpu_count
 from pathlib import Path
 
@@ -38,8 +40,13 @@ def run_bonsai(params: SimParams) -> Path:
     print(f"Generating ICs: {params.n_particles} particles...")
     pos, vel, mass = generate_galaxy_ic(params)
 
+    # Bonsai uses G=1 internally (N-body convention).  Our ICs use physical
+    # units: positions in kpc, velocities in km/s, masses in 1e10 Msun.
+    # Scaling masses by G_code makes Bonsai's G=1 equivalent to the physical G,
+    # so that circular velocities and orbital periods come out correctly.
+    G_CODE = 4.302e4   # kpc (km/s)^2 (1e10 Msun)^-1
     tipsy_ic = params.ic_file.with_suffix(".tipsy")
-    write_tipsy_ic(tipsy_ic, pos, vel, mass)
+    write_tipsy_ic(tipsy_ic, pos, vel, mass * G_CODE)
     print(f"Tipsy IC written to {tipsy_ic}")
 
     # Bonsai fixed timestep: fine enough for ~10 substeps per snapshot
@@ -56,7 +63,6 @@ def run_bonsai(params: SimParams) -> Path:
         "--snapname", snap_base,
         "--snapiter", str(params.snap_interval),
         "--dev", "0",
-        "--log",
     ]
 
     env = os.environ.copy()
@@ -73,16 +79,55 @@ def run_bonsai(params: SimParams) -> Path:
     return params.output_dir
 
 
-def _convert_snapshots(output_dir: Path, params: SimParams) -> None:
-    """Convert all Bonsai Tipsy output snapshots to GADGET-4-compatible HDF5."""
+def _convert_worker(args: tuple) -> str:
+    """Worker: convert one Tipsy file to HDF5 and delete the raw file.
+
+    Runs in an isolated subprocess (maxtasksperchild=1) so all numpy/hdf5
+    memory is returned to the OS by the kernel after each file exits.
+    """
     from galaxy_sim.sim.snap_convert import tipsy_to_hdf5
+    snap_str, out_str, params = args
+    snap_path = Path(snap_str)
+    out_path  = Path(out_str)
+    tipsy_to_hdf5(snap_path, out_path, params)
+    snap_path.unlink()
+    return snap_path.name
 
-    snaps = sorted(output_dir.glob("snapshot_*"))
-    # Filter out any already-converted HDF5 files
-    snaps = [s for s in snaps if s.suffix != ".hdf5"]
 
-    print(f"Converting {len(snaps)} Bonsai snapshots to HDF5...")
-    for i, snap in enumerate(snaps):
-        out = output_dir / f"snapshot_{i:03d}.hdf5"
-        tipsy_to_hdf5(snap, out, params)
-    print("Done.")
+def _convert_snapshots(output_dir: Path, params: SimParams) -> None:
+    """Convert all Bonsai Tipsy output snapshots to GADGET-4-compatible HDF5.
+
+    Resumable: skips any snapshot whose .hdf5 already exists.
+    Fault-tolerant: logs errors per file and continues rather than aborting.
+    Memory-safe: each file is converted in a fresh subprocess
+    (maxtasksperchild=1) so the OS reclaims all memory between files.
+    """
+    snaps = sorted(
+        s for s in output_dir.iterdir()
+        if s.suffix not in (".hdf5", ".tmp") and "snapshot" in s.name
+    )
+
+    total = len(snaps)
+    print(f"Converting {total} Bonsai snapshots to HDF5...")
+    errors = 0
+
+    with multiprocessing.Pool(processes=1, maxtasksperchild=1) as pool:
+        for i, snap in enumerate(snaps):
+            out = output_dir / f"snapshot_{i:03d}.hdf5"
+            if out.exists():
+                continue
+            t0 = time.monotonic()
+            try:
+                name = pool.apply(_convert_worker, ((str(snap), str(out), params),))
+                elapsed = time.monotonic() - t0
+                print(f"  [{i:03d}] {name} → {out.name}  ({elapsed:.1f}s)")
+            except Exception as exc:
+                elapsed = time.monotonic() - t0
+                errors += 1
+                print(f"  [{i:03d}] ERROR converting {snap.name}: {exc}  ({elapsed:.1f}s)")
+
+    if errors:
+        print(f"Done ({errors} error(s) — re-run to retry failed files).")
+    else:
+        print("Done.")
+

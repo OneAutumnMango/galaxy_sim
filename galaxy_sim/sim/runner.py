@@ -59,8 +59,8 @@ def run_simulation(params: SimParams) -> Path:
     params.output_dir.mkdir(parents=True, exist_ok=True)
     params.ic_file.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"Generating ICs: {params.n_particles} particles...")
     pos, vel, mass = generate_galaxy_ic(params)
+    print(f"Generating ICs: {len(pos)} particles (two-galaxy collision)...")
     write_hdf5_ic(params.ic_file, pos, vel, mass, params)
     print(f"ICs written to {params.ic_file}")
 

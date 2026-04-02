@@ -7,7 +7,6 @@ configs/Makefile*
 galaxy.mp4
 
 # Large data files — store with Git LFS or externally
-ic/*.hdf5
 *.hdf5
 *.tipsy
 gpuLog*
